@@ -1,212 +1,423 @@
-# Hybrid Talent Pool & Candidate Screening Backend
+# 🎯 Email-Based Candidate Screening Backend
 
-An intelligent, production-ready candidate profile screening backend powered by two **iGentic platform agents**:
-1. **Recruiter Agent** (`Recruiter_Agent`): Conversational recruiter assistant equipped with 13 HTTP backend tools for searching candidates, comparing profiles, inspecting rubric breakdowns, and generating reports.
-2. **Scoring Agent** (`Scoring_Agent`): Stateless, tool-free AI evaluator that receives an anonymized candidate resume and Job Description, and emits structured scoring JSON strictly following the evaluation rubric.
+> An intelligent, production-ready candidate profile screening backend powered by **iGentic platform agents**.
 
 ---
 
-## 1. System Architecture
+## 💡 Overview
+
+The screening engine uses two specialized **iGentic platform agents**:
+
+* 🤖 **Recruiter Agent (`Recruiter_Agent`)**: Conversational assistant armed with **13 REST tools** to manage job profiles, execute intelligent candidate searches, inspect detailed score breakdowns, and issue dynamic reports.
+* ⚡ **Scoring Agent (`Scoring_Agent`)**: A stateless, tool-free evaluator that ingests anonymized candidate resumes & JDs to output deterministic evaluation JSON adhering strictly to scoring rubrics.
+
+---
+
+## 🏗️ 1. System Architecture & Workflows
+
+The backend architecture handles **4 core flows**:
+
+1. **Email Ingestion**: Captures incoming M365 and nVitae emails.
+2. **Candidate Processing**: Performs automatic PII redaction, resume parsing, multi-tier deduplication, and queues scoring jobs.
+3. **Dual Scoring Pipeline**: Blends deterministic parameter scoring with AI resume evaluation.
+4. **Recruiter Interface**: Empowers recruiters via 13 API tools for search, ranking, and Excel report generation.
+
+---
+
+### 🔄 Architectural Dataflow
 
 ```mermaid
-graph TD
-    subgraph Email Ingestion Pipeline
-        M365[Microsoft 365 Exchange] -->|Graph Delta Sync| SyncSvc[Graph Sync Service]
-        SyncSvc -->|Store Raw EML & Parse| IngestWorker[Ingestion Worker]
-        Nvite[nVitae HTML/EML Mails] --> IngestWorker
-        IngestWorker -->|Redact PII & Extract Text| ResumeSvc[Resume Parser]
-        IngestWorker -->|Deduplication & Cross-link| DedupeSvc[Dedupe Service]
-        IngestWorker -->|Queue Scoring Jobs| ScoringQueue[(Postgres Scoring Jobs)]
+flowchart TD
+
+    subgraph INGEST["📥 Email Ingestion Pipeline"]
+        M365["Microsoft 365 Exchange"]
+        GraphSync["Graph Sync Service"]
+        Ingest["Ingestion Worker"]
+        NVite["nVitae HTML/EML Mails"]
+        ResumeParser["Resume Parser"]
+        Dedupe["Dedupe Service"]
+        ScoreQueue["Scoring Jobs Queue"]
+
+        M365 -->|"Graph Delta Sync"| GraphSync
+        GraphSync -->|"Store Raw EML & Parse"| Ingest
+        NVite -->|"Candidate Email"| Ingest
+        Ingest -->|"Redact PII & Extract Text"| ResumeParser
+        Ingest -->|"Deduplication & Cross-link"| Dedupe
+        Ingest -->|"Queue Scoring Jobs"| ScoreQueue
     end
 
-    subgraph Data Store (PostgreSQL)
-        PG[(PostgreSQL 16)]
-        Candidates[(candidates)]
-        Resumes[(resumes)]
-        Scores[(scores)]
-        Jobs[(job_profiles)]
-        Audit[(tool_audit_log)]
+    subgraph DB["🗄️ Data Store - PostgreSQL 16"]
+        PG[("PostgreSQL 16")]
+        Candidates[("candidates")]
+        Resumes[("resumes")]
+        Scores[("scores")]
+        Jobs[("job_profiles")]
+        Audit[("tool_audit_log")]
     end
 
-    subgraph Scoring Pipeline
-        ScoringQueue --> ScoringWorker[Scoring Worker]
-        ScoringWorker --> DetailsScorer[Deterministic Details Scorer]
-        ScoringWorker --> ScoringClient[Scoring Agent Client]
-        ScoringClient -->|Fake Mode or iGentic API| ScoringAgent[iGentic Scoring Agent]
-        ScoringAgent --> Grounding[Evidence Grounding Validator]
-        Grounding --> ScoreCombiner[Score Combiner 70/30 or 100/0]
-        ScoreCombiner --> Scores
+    subgraph SCORE["⚙️ Scoring Pipeline"]
+        ScoreWorker["Scoring Worker"]
+        Details["Deterministic Details Scorer"]
+        ScoringClient["Scoring Agent Client"]
+        ScoringAgent["iGentic Scoring Agent"]
+        Grounding["Evidence Grounding Validator"]
+        Combiner["Score Combiner (70/30 or 100/0)"]
+
+        ScoreQueue --> ScoreWorker
+        ScoreWorker --> Details
+        ScoreWorker --> ScoringClient
+        ScoringClient -->|"Fake Mode / iGentic API"| ScoringAgent
+        ScoringAgent --> Grounding
+        Grounding --> Combiner
+        Details --> Combiner
+        Combiner --> Scores
     end
 
-    subgraph Recruiter Experience
-        Recruiter[Recruiter / Hiring Manager] <-->|Chat / UI| RecruiterAgent[iGentic Recruiter Agent]
-        RecruiterAgent -->|13 REST Tools| ToolAPI[Tool API / FastAPI]
-        ToolAPI --> PG
-        ToolAPI --> ReportSvc[Excel Report Generator]
+    subgraph RECRUITER["👤 Recruiter Experience"]
+        Recruiter["Recruiter / Hiring Manager"]
+        RecruiterAgent["iGentic Recruiter Agent"]
+        ToolAPI["FastAPI Tool API (13 REST Tools)"]
+        ReportSvc["Excel Report Generator"]
+        Download["Report Download URL"]
+
+        Recruiter <-->|"Chat / UI"| RecruiterAgent
+        RecruiterAgent -->|"13 REST Tools"| ToolAPI
+        ToolAPI --> ReportSvc
+        ReportSvc --> Download
     end
+
+    Ingest --> Candidates
+    ResumeParser --> Resumes
+    Dedupe --> Candidates
+    Jobs --> ToolAPI
+    Candidates --> ToolAPI
+    Resumes --> ToolAPI
+    Scores --> ToolAPI
+    Audit --> ToolAPI
+    ToolAPI --> PG
+    Candidates --> PG
+    Resumes --> PG
+    Scores --> PG
+    Jobs --> PG
+    Audit --> PG
+```
+
+### 🚀 End-to-End Candidate Screening Flow
+
+```mermaid
+flowchart LR
+
+    A["📧 Candidate Email"] --> B["Microsoft Graph / nVitae"]
+    B --> C["Ingestion Worker"]
+    C --> D["PII Redaction"]
+    D --> E["Resume Text Extraction"]
+    E --> F["Candidate Deduplication"]
+    F --> G["Candidate + Resume Stored"]
+
+    G --> H["Active Job Profile"]
+    H --> I["Scoring Job Queue"]
+    I --> J["Scoring Worker"]
+
+    J --> K["Candidate Details Score (30%)"]
+    J --> L["iGentic Scoring Agent - Resume Score (70%)"]
+
+    L --> M["Evidence Grounding Validation"]
+    K --> N["Score Combiner"]
+    M --> N
+
+    N --> O["Final Candidate Score"]
+    O --> P["Ranking Run"]
+
+    P --> Q["Recruiter Agent"]
+    Q --> R["Search / Dossier / Ranking"]
+    R --> S["Excel Report"]
+    S --> T["Absolute Download URL"]
+```
+
+### 📊 Report Generation & Download Flow
+
+```mermaid
+flowchart LR
+    A["Recruiter Agent"] --> B["generate_report"]
+    B --> C["Excel Report Generator"]
+    C --> D["tmp/reports/report.xlsx"]
+    C --> E["PUBLIC_BASE_URL"]
+    E --> F["Absolute Download URL"]
+    F --> G["GET /api/v1/reports/download/{filename}"]
+    G --> H["FastAPI FileResponse"]
+    H --> I["📄 XLSX Download"]
 ```
 
 ---
 
-## 2. Key Features
+## 📂 Repository Structure
 
-- **Dual-Scoring Formula**:
-  - Combined Score: **70% Resume Evaluation** + **30% Candidate Details** (when resume text is present).
-  - Renormalized Score: **100% Candidate Details** when resume is missing or unreadable (flagged with `resume_missing`).
-- **Evidence Grounding Verification**: Penalizes and flags unverified claims if the scoring agent hallucinates evidence not present in the candidate's actual resume text.
-- **Robust Deduplication**: Multi-tier matching (email, normalized phone, fuzzy name + company, resume content hash) with automated manual review flag generation (`duplicate_flags`).
-- **Prompt Injection Defense**: Anonymized evaluation prompts and deterministic Python scoring guard against hostile resumes attempting to override evaluation weights.
-- **Circuit Breaker & Budget Guard**: Daily budget enforcement and sliding-window failure tripwires prevent API runaways during batch screening.
-- **Audit-Logged Tool API**: Every tool call by the Recruiter Agent is persisted with caller, parameters, duration, and status in `tool_audit_log`.
+```text
+Email-based candidate profile screening agent/
+│
+├── 📂 backend/
+│   ├── 📂 app/
+│   │   ├── main.py             # FastAPI Application Entrypoint
+│   │   ├── config.py           # App Settings & Environment Vars
+│   │   ├── 📂 models/          # Database Models (SQLAlchemy)
+│   │   ├── 📂 schemas/         # Pydantic Schemas
+│   │   ├── 📂 services/        # Core Business Logic Services
+│   │   ├── 📂 workers/         # Pipeline Background Workers
+│   │   └── 📂 routers/         # API Endpoint Controllers
+│   │
+│   ├── 📂 alembic/             # Database Migration Scripts
+│   ├── 📂 tests/               # Pytest Unit & Integration Tests
+│   ├── 📂 scripts/             # Execution Scenarios & Utility Scripts
+│   ├── requirements.txt        # Backend Python Dependencies
+│   └── .env.example            # Environment Template
+│
+├── 📂 agent-prompts/
+│   ├── Recruiter_Agent.md     # Recruiter Agent System Instructions
+│   ├── Scoring_Agent.md       # Scoring Agent System Instructions
+│   ├── TOOLS_CONFIG.md        # Function/Tool Manifest Schemas
+│   └── TOOLS_REFERENCE.md     # Expanded Tool Usage Guides
+│
+├── docker-compose.yml          # Container Infrastructure Setup
+└── README.md                   # Project Documentation
+```
 
 ---
 
-## 3. Quickstart
+## ⭐ 2. Key Features
+
+* **🧮 Dual-Scoring Formula**: Standard: 70% Resume Score + 30% Candidate Details. Fallback: Renormalizes to 100% Candidate Details when resume is missing/unreadable (flagged with `resume_missing`).
+* **🔍 Evidence Grounding Verification**: Automatically detects and penalizes hallucinatory evaluation outputs by checking claims directly against raw resume text.
+* **👥 Multi-Tier Deduplication**: Detects duplicates via email, phone, fuzzy name + company matching, and resume hashes, creating flags (`duplicate_flags`) for review.
+* **🛡️ Prompt Injection Defense**: Anonymizes evaluation inputs and enforces deterministic score calculations in Python to reject prompt override attempts.
+* **⚡ Budget Guard & Circuit Breaker**: Features a rolling daily budget cap ($50/day limit) and error rate limits to protect against unexpected API spend.
+* **📝 Audit-Logged Tool API**: Captures caller ID, execution parameters, execution time, and system responses in `tool_audit_log`.
+
+---
+
+## ⚡ 3. Quickstart
 
 ### Prerequisites
-- Docker & Docker Compose (or Python 3.11+ and PostgreSQL 16)
 
-### Option A: Running via Docker Compose (Recommended)
+* Docker & Docker Compose *(Recommended)* or Python 3.11+ with PostgreSQL 16.
+
+### Option A: Running via Docker Compose *(Recommended)*
 
 1. Clone repository and navigate to root:
    ```bash
    cd "P:\Projects\Igentic\Email-based candidate profile screening agent"
    ```
-2. Build and start PostgreSQL and Backend:
+2. Spin up database and backend services:
    ```bash
    docker compose up -d --build
    ```
-3. Verify liveness and readiness:
+3. Verify API endpoints:
    ```bash
+   # Liveness probe
    curl http://localhost:8000/health
-   # Response: {"status":"ok","service":"talentpool-backend"}
+   # Result: {"status":"ok","service":"talentpool-backend"}
 
+   # Readiness probe
    curl http://localhost:8000/ready
-   # Response: {"status":"ready","database":"connected"}
+   # Result: {"status":"ready","database":"connected"}
    ```
-4. Access interactive OpenAPI documentation:
-   - [http://localhost:8000/docs](http://localhost:8000/docs)
+4. Explore Swagger API Documentation: Open `http://localhost:8000/docs` in your browser.
 
 ### Option B: Local Development Setup
 
-1. Create and activate a Python virtual environment:
+1. Create and activate a virtual environment:
    ```bash
    python -m venv venv
-   source venv/bin/activate  # Or on Windows: venv\Scripts\activate
+   source venv/bin/activate  # On Windows: venv\Scripts\activate
    ```
-2. Install dependencies:
+2. Install project dependencies:
    ```bash
    pip install -r backend/requirements.txt
    ```
-3. Configure environment:
+3. Configure environment settings:
    ```bash
    cp backend/.env.example backend/.env
-   # Update DATABASE_URL with your PostgreSQL credentials
+   # Ensure DATABASE_URL is updated with local PostgreSQL settings
    ```
-4. Run Alembic migrations:
+4. Apply database migrations:
    ```bash
    cd backend
    alembic upgrade head
    ```
-5. Start development server:
+5. Start server:
    ```bash
    uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
    ```
 
 ---
 
-## 4. Configuration Reference (`backend/.env`)
+## ⚙️ 4. Configuration Reference (`backend/.env`)
 
-| Variable | Default | Purpose |
-|---|---|---|
+| Variable | Default | Description |
+| :--- | :--- | :--- |
 | `DATABASE_URL` | `postgresql+asyncpg://...` | Asynchronous SQLAlchemy connection string |
-| `APP_ENV` | `development` | Environment mode (`development`, `production`, `test`) |
-| `PUBLIC_BASE_URL` | `http://localhost:8000` | Public base URL for generated report download links (local or `https://<azure-container-app-fqdn>`) |
-| `SCORING_AGENT_MODE` | `fake` | Scoring agent mode: `fake` (deterministic stub) or `igentic` (real iGentic app) |
-| `IGENTIC_BASE_URL` | `https://api.igentic.ai` | Base URL for the iGentic API |
-| `IGENTIC_API_KEY` | `""` | API key for iGentic platform authentication |
-| `IGENTIC_SCORING_APP_ID` | `""` | App ID of the stateless Scoring Agent |
-| `IGENTIC_RECRUITER_APP_ID` | `""` | App ID of the Recruiter Agent |
-| `IGENTIC_USERNAME` | `recruiter-system` | Service username for iGentic audit headers |
-| `MS_TENANT_ID` | `""` | Azure AD / Microsoft Entra Tenant ID (Optional) |
-| `MS_CLIENT_ID` | `""` | Azure App Client ID for Graph Mail API (Optional) |
-| `MS_CLIENT_SECRET` | `""` | Azure App Client Secret (Optional) |
-| `MAILBOX_UPN` | `""` | Target mailbox User Principal Name (Optional) |
-| `DAILY_BUDGET_CENTS` | `5000` | Daily scoring pipeline budget cap in cents ($50.00) |
-| `RATE_LIMIT_PER_MINUTE` | `60` | Tool API rate limit threshold |
+| `APP_ENV` | `development` | Deployment environment (`development`, `production`, `test`) |
+| `PUBLIC_BASE_URL` | `http://localhost:8000` | Public host address for report URLs |
+| `SCORING_AGENT_MODE` | `fake` | Execution mode: `fake` (mock testing) or `igentic` (live API) |
+| `IGENTIC_BASE_URL` | `https://api.igentic.ai` | Target iGentic API Endpoint |
+| `IGENTIC_API_KEY` | `""` | Auth Key for iGentic API Services |
+| `IGENTIC_SCORING_APP_ID` | `""` | App ID assigned to Scoring Agent |
+| `IGENTIC_RECRUITER_APP_ID` | `""` | App ID assigned to Recruiter Agent |
+| `IGENTIC_USERNAME` | `recruiter-system` | System identity string for audit trails |
+| `MS_TENANT_ID` | `""` | Azure AD / Entra Tenant ID (Optional) |
+| `MS_CLIENT_ID` | `""` | Azure App Client ID (Optional) |
+| `MS_CLIENT_SECRET` | `""` | Azure App Secret (Optional) |
+| `MAILBOX_UPN` | `""` | Target Microsoft 365 Mailbox UPN (Optional) |
+| `DAILY_BUDGET_CENTS` | `5000` | Pipeline execution cap per day in cents ($50.00) |
+| `RATE_LIMIT_PER_MINUTE` | `60` | Tool API request rate limit |
 
-*Note: When Microsoft Graph credentials are empty or omitted, the mailbox sync gracefully runs in safe no-op mode without crashing.*
+> ℹ️ **Note:** If Microsoft Graph credentials are left empty, mailbox sync gracefully operates in non-blocking stub mode.
 
 ---
 
-## 5. The Two iGentic Agents
+## 🤖 5. The Two iGentic Agents
 
 ### 1. Recruiter Agent (`Recruiter_Agent`)
-- **Role**: Conversational Recruiter Assistant.
-- **Prompt Specification**: [`agent-prompts/Recruiter_Agent.md`](agent-prompts/Recruiter_Agent.md).
-- **Tools**: Equipped with all 13 backend REST tools defined in [`agent-prompts/TOOLS_CONFIG.md`](agent-prompts/TOOLS_CONFIG.md) and [`agent-prompts/TOOLS_REFERENCE.md`](agent-prompts/TOOLS_REFERENCE.md).
-- **Behavior**: Strictly grounded in database records; verifies candidate IDs before actions; prompts for missing criteria; enforces active JD requirement before ranking.
+* **Role:** Interactive Recruiter Assistant.
+* **Prompt Spec:** `agent-prompts/Recruiter_Agent.md`
+* **Tools:** Uses 13 system tools defined in `agent-prompts/TOOLS_CONFIG.md` and `agent-prompts/TOOLS_REFERENCE.md`.
+* **Behavior:** Fully database-grounded. Validates IDs, demands required parameters, and enforces active job profiles before generating candidates rankings.
 
 ### 2. Scoring Agent (`Scoring_Agent`)
-- **Role**: Stateless Resume Evaluator.
-- **Prompt Specification**: [`agent-prompts/Scoring_Agent.md`](agent-prompts/Scoring_Agent.md).
-- **Tools**: **Zero tools**. Operates as a pure input-to-output evaluation engine.
-- **Behavior**: Accepts an anonymized candidate resume and JD criteria; outputs strict JSON conforming to the evaluation rubric schema; resistant to prompt injections embedded in resume text.
+* **Role:** Independent Candidate Evaluator.
+* **Prompt Spec:** `agent-prompts/Scoring_Agent.md`
+* **Tools:** None (Tool-free). Operates strictly as a structured transformation function.
+* **Behavior:** Receives candidate resume text and evaluation rubrics, producing standard scoring JSON. Resistant to candidate resume prompt injections.
 
 ---
 
-## 6. Recruiter Agent 13 Tools Catalog
+## 🛠️ 6. Recruiter Agent Tools Catalog (13 Tools)
 
-| # | Tool Name | HTTP Endpoint | Description |
-|---|---|---|---|
-| **1** | `get_pool_stats` | `POST /api/v1/tools/get_pool_stats` | Pipeline candidate totals, processing states, and active JDs. |
-| **2** | `sync_mailbox` | `POST /api/v1/tools/sync_mailbox` | Trigger Graph API delta sync for candidate emails. |
-| **3** | `list_job_profiles` | `POST /api/v1/tools/list_job_profiles` | List open job roles with filter by status (`draft`, `active`, `inactive`). |
-| **4** | `save_job_profile` | `POST /api/v1/tools/save_job_profile` | Create or update a JD draft with structured criteria. |
-| **5** | `activate_job_profile`| `POST /api/v1/tools/activate_job_profile`| Transition JD to active and queue scoring jobs for pool. |
-| **6** | `deactivate_job_profile`| `POST /api/v1/tools/deactivate_job_profile`| Transition JD to inactive, cancel queued scoring jobs, preserve history. |
-| **7** | `get_scoring_status` | `POST /api/v1/tools/get_scoring_status` | Query scoring queue progress and failure metrics for a JD. |
-| **8** | `search_candidates` | `POST /api/v1/tools/search_candidates` | Filter candidates by skills, experience, notice period, location. |
-| **9** | `get_candidate` | `POST /api/v1/tools/get_candidate` | Return comprehensive candidate dossier with scores & history. |
-| **10**| `rank_candidates` | `POST /api/v1/tools/rank_candidates` | Generate frozen ranking run for active JD with custom weights. |
-| **11**| `find_duplicates` | `POST /api/v1/tools/find_duplicates` | Query potential duplicate candidate records for review. |
-| **12**| `merge_candidates` | `POST /api/v1/tools/merge_candidates` | Merge duplicate candidate profile into primary record. |
-| **13**| `generate_report` | `POST /api/v1/tools/generate_report` | Generate downloadable formatted Excel (`.xlsx`) shortlist report. |
+| ID | Tool Name | Endpoint | Function |
+| :---: | :--- | :--- | :--- |
+| **1** | `get_pool_stats` | `POST /api/v1/tools/get_pool_stats` | Fetches overall pipeline metrics, candidate totals, and status breakdowns. |
+| **2** | `sync_mailbox` | `POST /api/v1/tools/sync_mailbox` | Triggers delta synchronization with M365 Graph API. |
+| **3** | `list_job_profiles` | `POST /api/v1/tools/list_job_profiles` | Lists job profiles filtered by status (`draft`, `active`, `inactive`). |
+| **4** | `save_job_profile` | `POST /api/v1/tools/save_job_profile` | Creates or updates job profiles with custom rubrics. |
+| **5** | `activate_job_profile` | `POST /api/v1/tools/activate_job_profile` | Sets JD status to active and enqueues candidate batch scoring jobs. |
+| **6** | `deactivate_job_profile` | `POST /api/v1/tools/deactivate_job_profile` | Inactivates JD, cancels pending scoring jobs, and retains history. |
+| **7** | `get_scoring_status` | `POST /api/v1/tools/get_scoring_status` | Queries real-time queue progress and evaluation failure rates. |
+| **8** | `search_candidates` | `POST /api/v1/tools/search_candidates` | Filters pool by skills, years of experience, notice period, and location. |
+| **9** | `get_candidate` | `POST /api/v1/tools/get_candidate` | Returns candidate profile details, scores, and evaluation timeline. |
+| **10** | `rank_candidates` | `POST /api/v1/tools/rank_candidates` | Generates a fixed candidate ranking run based on specified criteria. |
+| **11** | `find_duplicates` | `POST /api/v1/tools/find_duplicates` | Queries system flags to identify duplicate candidate records. |
+| **12** | `merge_candidates` | `POST /api/v1/tools/merge_candidates` | Merges duplicate candidate entries into a single target record. |
+| **13** | `generate_report` | `POST /api/v1/tools/generate_report` | Generates formatted Excel reports (`.xlsx`) with absolute download links. |
 
 ---
 
-## 7. Testing & Verification
+## 🌐 7. Complete System Overview
+
+```text
+                                CANDIDATE EMAIL
+                                       |
+                                       v
+                         +---------------------------+
+                         | Microsoft Graph / nVitae |
+                         +---------------------------+
+                                       |
+                                       v
+                             +------------------+
+                             | Ingestion Worker |
+                             +------------------+
+                                |      |      |
+                                |      |      +--> Deduplication
+                                |      |
+                                |      +---------> PII Redaction
+                                |
+                                +---------------> Resume Extraction
+                                       |
+                                       v
+                              Candidate + Resume
+                                       |
+                                       v
+                                PostgreSQL 16
+                                       |
+                                       v
+                                Scoring Queue
+                                       |
+                                       v
+                              +----------------+
+                              | Scoring Worker |
+                              +----------------+
+                                 |          |
+                                 |          +----------------------+
+                                 |                                 |
+                                 v                                 v
+                          Details Scorer                 iGentic Scoring Agent
+                             (30%)                               (70%)
+                                 |                                 |
+                                 |                                 v
+                                 |                         Evidence Grounding
+                                 |                                 |
+                                 +---------------+-----------------+
+                                                 |
+                                                 v
+                                            Final Score
+                                                 |
+                                                 v
+                                            Ranking Run
+                                                 |
+                                                 v
+                                     iGentic Recruiter Agent
+                                                 |
+                                +----------------+----------------+
+                                |                |                |
+                                v                v                v
+                          Search/Dossier      Ranking      Generate Report
+                                                                 |
+                                                                 v
+                                                             XLSX File
+                                                                 |
+                                                                 v
+                                                       Absolute Download URL
+                                                                 |
+                                                                 v
+                                                      Recruiter / External Agent
+```
+
+---
+
+## 🧪 8. Testing & Verification
 
 ### Running Unit & Integration Tests
-Execute the full pytest suite:
+
+Run `pytest` to verify service functions and API routers:
 ```bash
 cd backend
 python -m pytest -q
-# Result: 27 passed in < 6s
+# Expected Output: 27 passed in < 6s
 ```
 
-### Running the End-to-End Recruiter Scenario Script
-Verifies all 13 tools and the end-to-end recruiter workflow against live backend:
+### Running End-to-End Workflow Validation
+
+Simulate the full candidate ingestion, scoring, and recruiter conversation flow:
 ```bash
 python scripts/run_recruiter_scenario.py
 ```
-This script exercises:
-1. Ingesting candidate email fixtures (`nvite_sample_1.html`, `nvite_sample_2.html`, `nvite_sample_1.eml`).
-2. Checking pipeline stats (`get_pool_stats`).
-3. Drafting a JD (`save_job_profile`).
-4. Listing JDs (`list_job_profiles`).
-5. Verifying rejection of unactivated ranking (`rank_candidates` -> HTTP 400 `JD_REQUIRED`).
-6. Activating the JD (`activate_job_profile`) and batch-enqueuing scoring jobs.
-7. Processing scoring queue in deterministic `fake` mode.
-8. Monitoring scoring queue progress (`get_scoring_status` -> 100%).
-9. Freezing candidate ranking (`rank_candidates`).
-10. Inspecting candidate dossier (`get_candidate`).
-11. Generating and downloading the formatted Excel report (`generate_report` -> `.xlsx`).
-12. Deactivating the JD (`deactivate_job_profile`) and cancelling queued scoring jobs while preserving historical scores.
-13. Reactivating the JD (`activate_job_profile`) back to active status.
 
-### Testing iGentic Chat Integration
-Once you have configured valid iGentic credentials in `backend/.env`, test conversation prompts:
+#### Scenario script execution sequence:
+
+1. Ingresses raw emails (`nvite_sample_1.html`, `nvite_sample_2.html`, `nvite_sample_1.eml`).
+2. Obtains candidate pool metrics via `get_pool_stats`.
+3. Creates a new JD draft using `save_job_profile`.
+4. Lists registered profiles using `list_job_profiles`.
+5. Confirms security check: Rejects unactivated ranking (`rank_candidates` ➔ `400 JD_REQUIRED`).
+6. Triggers `activate_job_profile` to start background queue processing.
+7. Processes batch evaluations in deterministic `fake` mode.
+8. Monitors queue completion with `get_scoring_status` (reaps 100% status).
+9. Creates a candidate ranking snapshot using `rank_candidates`.
+10. Inspects individual dossiers using `get_candidate`.
+11. Generates downloadable formatted spreadsheet reports via `generate_report`.
+12. Deactivates JD via `deactivate_job_profile` and verifies non-destructive queue cancellation.
+13. Restores active state using `activate_job_profile`.
+
+### Interactive Agent Integration Testing
+
+Verify agent responses using live iGentic platform credentials:
 ```bash
 python scripts/test_recruiter_agent_chat.py
-```
